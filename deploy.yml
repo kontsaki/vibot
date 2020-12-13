@@ -1,0 +1,19 @@
+---
+- hosts: {{ viberbot }}
+  tasks:
+    - package:
+        name:
+          - build-essentials 
+          - pkg-config
+          - libssl-dev
+          - libclang1
+          - libclang-11-dev
+
+    - copy:
+        src: "{{ item }}"
+      loop:
+        - src
+        - Cargo.toml
+
+    - git:
+        url: https://github.com/RedisJSON/RedisJSON.git
