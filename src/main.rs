@@ -1,7 +1,15 @@
+use redis::{FromRedisValue, RedisError, RedisResult};
 use reqwest;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
+use serde_json::{from_slice, json};
 use std::collections::HashMap;
 use warp::{reply, Filter};
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+struct User {
+    id: String,
+    name: String,
+}
 
 #[tokio::main]
 async fn main() {}
@@ -40,9 +48,36 @@ fn conversaton_started() -> warp::reply::Json {
     }))
 }
 
+impl FromRedisValue for User {
+    fn from_redis_value(v: &redis::Value) -> RedisResult<Self> {
+        match v {
+            redis::Value::Data(bytes) => Ok(from_slice::<User>(bytes).unwrap()),
+            _ => panic!("Not a User value"),
+        }
+    }
+}
+
+async fn add_user(key: &str, user: &User) -> RedisResult<()> {
+    let client = redis::Client::open("redis://localhost/").unwrap();
+    let mut con = client.get_async_connection().await.unwrap();
+    redis::cmd("JSON.SET")
+        .arg(&[key, ".", &serde_json::to_string(&user).unwrap()])
+        .query_async(&mut con)
+        .await
+}
+
+async fn get_user(key: &str) -> RedisResult<User> {
+    let client = redis::Client::open("redis://localhost/").unwrap();
+    let mut con = client.get_async_connection().await.unwrap();
+    redis::cmd("JSON.GET")
+        .arg(&[key])
+        .query_async(&mut con)
+        .await
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{events, webhook};
+    use super::{add_user, events, get_user, webhook, User};
     use serde_json::json;
     use warp::http::StatusCode;
     use warp::test::request;
@@ -113,5 +148,44 @@ mod tests {
             .to_string()
             .into_bytes()
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_user() -> redis::RedisResult<()> {
+        let user = User {
+            id: "user-id".to_string(),
+            name: "user-name".to_string(),
+        };
+
+        let client = redis::Client::open("redis://localhost/").unwrap();
+        let mut con = client.get_async_connection().await.unwrap();
+
+        redis::cmd("JSON.SET")
+            .arg(&["user:id", ".", &serde_json::to_string(&user).unwrap()])
+            .query_async(&mut con)
+            .await?;
+
+        assert_eq!(get_user("user:id").await.unwrap(), user);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_add_user() -> redis::RedisResult<()> {
+        let user = User {
+            id: "user-id".to_string(),
+            name: "user-name".to_string(),
+        };
+
+        add_user("user:id", &user).await?;
+
+        let client = redis::Client::open("redis://localhost/").unwrap();
+        let mut con = client.get_async_connection().await.unwrap();
+        let result: User = redis::cmd("JSON.GET")
+            .arg(&["user:id"])
+            .query_async(&mut con)
+            .await?;
+
+        assert_eq!(result, user);
+        Ok(())
     }
 }
