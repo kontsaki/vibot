@@ -2,6 +2,7 @@ use redis::{FromRedisValue, RedisResult};
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_slice, json};
+use std::convert::Infallible;
 use warp::{reply, Filter};
 
 #[derive(Default, Serialize, Deserialize, Debug, Eq, PartialEq)]
@@ -12,13 +13,6 @@ struct User {
     country: Option<String>,
     language: Option<String>,
     api_version: Option<i8>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(untagged)]
-enum Event {
-    ConversationStarted(ConversationStarted),
-    Unknown,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -47,21 +41,34 @@ fn webhook(webhook_url: &str, api_key: String, site_url: String) -> reqwest::Req
 }
 
 pub fn events() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    warp::path!("viber" / "events")
-        .and(warp::body::json())
-        .and_then(|event: Event| match event {
-            Event::ConversationStarted(event) => conversation_started(event).await,
-            Event::Unknown => reply::json(&json!({})),
-        })
+    conversation_started().or(unrelated_event())
 }
 
-async fn conversation_started(event: ConversationStarted) -> warp::reply::Json {
-    add_user(&format!("id:{}", event.user.id), &event.user).await;
-    reply::json(&json!({
+pub fn conversation_started(
+) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    warp::path!("viber" / "events")
+        .and(warp::body::json())
+        .and_then(conversation_started_handler)
+}
+
+async fn conversation_started_handler(
+    event: ConversationStarted,
+) -> Result<impl warp::Reply, Infallible> {
+    add_user(&format!("id:{}", event.user.id), &event.user)
+        .await
+        .expect("Failed to add user to db.");
+    Ok(reply::json(&json!({
         "type": "picture",
         "text": "Welcome",
         "media": "https://a-picture",
-    }))
+    })))
+}
+
+pub fn unrelated_event() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone
+{
+    warp::path!("viber" / "events")
+        .and(warp::any())
+        .map(|| warp::reply())
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -154,8 +161,23 @@ mod tests {
         assert_eq!(result, RedisUser::Some(user));
         Ok(())
     }
+
+    // #[tokio::test]
+    // async fn test_list_subscribed() -> redis::RedisResult<()> {
+    //     let client = redis::Client::open("redis://localhost/").unwrap();
+    //     let mut con = client.get_async_connection().await.unwrap();
+
+    //     let result: RedisUser = redis::cmd("JSON.GET")
+    //         .arg(&["user:id"])
+    //         .query_async(&mut con)
+    //         .await?;
+
+    //     assert_eq!(result, RedisUser::Some(user));
+    //     Ok(())
+    // }
+
     #[tokio::test]
-    async fn test_events_conversation_started() {
+    async fn test_event_conversation_started() {
         let api = events();
 
         let resp = request()
@@ -163,8 +185,8 @@ mod tests {
             .path("/viber/events")
             .json(&json!({
                 "event":"conversation_started",
-                "timestamp":1457764197627i64,
-                "message_token":4912661846655238145i64,
+                "timestamp":1457764197627 as i64,
+                "message_token":4912661846655238145 as i64,
                 "type":"open",
                 "context":"context information",
                 "user":{
@@ -197,6 +219,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_event_subscribed() {
+        let api = events();
+
+        let resp = request()
+            .method("POST")
+            .path("/viber/events")
+            .json(&json!({
+               "event":"subscribed",
+               "timestamp":1457764197627 as i64,
+               "user":{
+                   "id":"01234567890A=",
+                   "name":"John McClane",
+                   "avatar":"http://avatar.example.com",
+                   "country":"UK",
+                   "language":"en",
+                   "api_version":1
+               },
+               "message_token":4912661846655238145 as i64
+            }))
+            .reply(&api)
+            .await;
+
+        let subscribed = list_subscribed();
+        assert!(subscribed.contains(&"01234567890A="));
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn test_events_unrelated() {
         let api = events();
 
@@ -210,7 +261,6 @@ mod tests {
             .await;
 
         assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(resp.into_body(), json!({}).to_string());
     }
 
     #[test]
