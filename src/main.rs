@@ -130,21 +130,18 @@ mod tests {
     use warp::http::StatusCode;
     use warp::test::request;
 
-    macro_rules! delkey {
-        ($($key:expr),*) => {
-            let client = redis::Client::open(REDIS_HOST).unwrap();
-            let mut con = client.get_async_connection().await.unwrap();
+    async fn flush_all() {
+        let client = redis::Client::open(REDIS_HOST).unwrap();
+        let mut con = client.get_async_connection().await.unwrap();
 
-            redis::cmd("DEL")
-                .arg(&[$($key),*])
-                .query_async(&mut con)
-                .await?;
-        };
+        redis::cmd("FLUSHALL")
+            .query_async(&mut con)
+            .await.unwrap()
     }
 
     #[tokio::test]
     async fn test_get_user() -> redis::RedisResult<()> {
-        delkey!("subscribed", "user:id");
+        flush_all().await;
 
         let user = User {
             id: "user-id".to_string(),
@@ -166,7 +163,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_user() -> redis::RedisResult<()> {
-        delkey!("subscribed", "user:id");
+        flush_all().await;
 
         let user = User {
             id: "user-id".to_string(),
@@ -217,6 +214,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_conversation_started() {
+        flush_all().await;
         let api = events();
 
         let resp = request()
@@ -288,6 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_events_unrelated() {
+        flush_all().await;
         let api = events();
 
         let resp = request()
