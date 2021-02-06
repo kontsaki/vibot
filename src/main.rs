@@ -5,7 +5,7 @@ use serde_json::{from_slice, json};
 use std::convert::Infallible;
 use warp::{reply, Filter};
 
-const REDIS_HOST: &'static str = "redis://viberbot.lxd/";
+const REDIS_HOST: &'static str = "redis://localhost/";
 
 #[derive(Default, Serialize, Deserialize, Debug, Eq, PartialEq)]
 struct User {
@@ -216,7 +216,7 @@ mod tests {
     // }
 
     #[tokio::test]
-    async fn test_event_conversation_started() -> redis::RedisResult<()> {
+    async fn test_event_conversation_started() {
         let api = events();
 
         let resp = request()
