@@ -1,8 +1,8 @@
 use redis::{FromRedisValue, RedisResult};
 use reqwest;
 use serde::{Deserialize, Serialize};
-use serde_json::{from_slice, json};
-use std::convert::Infallible;
+use serde_json::{from_slice, from_str, json};
+use std::{collections::HashSet, convert::Infallible};
 use warp::{reply, Filter};
 
 const REDIS_HOST: &'static str = "redis://localhost/";
@@ -101,7 +101,7 @@ async fn add_user(key: &str, user: &User) -> RedisResult<()> {
         .query_async(&mut con)
         .await?;
 
-    redis::cmd("LPUSH")
+    redis::cmd("SADD")
         .arg(&["subscribed", key])
         .query_async(&mut con)
         .await?;
@@ -123,6 +123,23 @@ async fn get_user(key: &str) -> Option<User> {
     }
 }
 
+async fn list_subscribed() -> Option<Vec<User>> {
+    let client = redis::Client::open(REDIS_HOST).unwrap();
+    let mut con = client.get_async_connection().await.unwrap();
+    let ids: HashSet<String> = redis::cmd("SMEMBERS")
+        .arg("subscribed")
+        .query_async(&mut con)
+        .await
+        .ok()?;
+    let mut users = Vec::new();
+    for id in ids {
+        if let Some(user) = get_user(&id).await {
+            users.push(user)
+        }
+    }
+    Some(users)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,91 +147,8 @@ mod tests {
     use warp::http::StatusCode;
     use warp::test::request;
 
-    async fn flush_all() {
-        let client = redis::Client::open(REDIS_HOST).unwrap();
-        let mut con = client.get_async_connection().await.unwrap();
-
-        redis::cmd("FLUSHALL")
-            .query_async(&mut con)
-            .await.unwrap()
-    }
-
-    #[tokio::test]
-    async fn test_get_user() -> redis::RedisResult<()> {
-        flush_all().await;
-
-        let user = User {
-            id: "user-id".to_string(),
-            name: "user-name".to_string(),
-            ..Default::default()
-        };
-
-        let client = redis::Client::open(REDIS_HOST).unwrap();
-        let mut con = client.get_async_connection().await.unwrap();
-
-        redis::cmd("JSON.SET")
-            .arg(&["user:id", ".", &serde_json::to_string(&user).unwrap()])
-            .query_async(&mut con)
-            .await?;
-
-        assert_eq!(get_user("user:id").await, Some(user));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_add_user() -> redis::RedisResult<()> {
-        flush_all().await;
-
-        let user = User {
-            id: "user-id".to_string(),
-            name: "user-name".to_string(),
-            ..Default::default()
-        };
-
-        add_user("user:id", &user).await?;
-
-        let client = redis::Client::open(REDIS_HOST).unwrap();
-        let mut con = client.get_async_connection().await.unwrap();
-        let result: RedisUser = redis::cmd("JSON.GET")
-            .arg(&["user:id"])
-            .query_async(&mut con)
-            .await?;
-
-        let subscribed: Vec<String> = redis::cmd("LRANGE")
-            .arg(&["subscribed", "0", "-1"])
-            .query_async(&mut con)
-            .await?;
-
-        println!("{:?}", subscribed);
-        assert_eq!(result, RedisUser::Some(user));
-        assert_eq!(subscribed, vec![String::from("user:id")]);
-        Ok(())
-    }
-
-    // #[tokio::test]
-    // async fn test_list_subscribed() -> redis::RedisResult<()> {
-    //     let user0 = User {
-    //         id: "user0-id".to_string(),
-    //         name: "user0-name".to_string(),
-    //         ..Default::default()
-    //     };
-    //     let user1 = User {
-    //         id: "user1-id".to_string(),
-    //         name: "user1-name".to_string(),
-    //         ..Default::default()
-    //     };
-
-    //     add_user("user:user1", &user1).await?;
-
-    //     let users = list_subscribed();
-
-    //     assert_eq!(vec![user0, user1], RedisUser::Some(user));
-    //     Ok(())
-    // }
-
     #[tokio::test]
     async fn test_event_conversation_started() {
-        flush_all().await;
         let api = events();
 
         let resp = request()
@@ -252,41 +186,66 @@ mod tests {
         let user = get_user("id:01234567890A=")
             .await
             .expect("User doesn't exist");
-        assert_eq!(user.name, "John McClane")
+        assert_eq!(user.name, "John McClane");
+        let new_user: User = from_str(
+            &json!({
+                "id":"01234567890A=",
+                "name":"John McClane",
+                "avatar":"http://avatar.example.com",
+                "country":"UK",
+                "language":"en",
+                "api_version":1
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let subscribed = list_subscribed().await.unwrap();
+        assert!(subscribed.contains(&new_user));
     }
 
-    // #[tokio::test]
-    // async fn test_event_subscribed() {
-    //     let api = events();
+    #[tokio::test]
+    async fn test_event_subscribed() {
+        let api = events();
 
-    //     let resp = request()
-    //         .method("POST")
-    //         .path("/viber/events")
-    //         .json(&json!({
-    //            "event":"subscribed",
-    //            "timestamp":1457764197627 as i64,
-    //            "user":{
-    //                "id":"01234567890A=",
-    //                "name":"John McClane",
-    //                "avatar":"http://avatar.example.com",
-    //                "country":"UK",
-    //                "language":"en",
-    //                "api_version":1
-    //            },
-    //            "message_token":4912661846655238145 as i64
-    //         }))
-    //         .reply(&api)
-    //         .await;
+        let resp = request()
+            .method("POST")
+            .path("/viber/events")
+            .json(&json!({
+               "event":"subscribe",
+               "timestamp":1457764197627 as i64,
+               "user":{
+                   "id":"subscribed",
+                   "name":"John McClane Subscribed",
+                   "avatar":"http://avatar.example.com",
+                   "country":"UK",
+                   "language":"en",
+                   "api_version":1
+               },
+               "message_token":4912661846655238145 as i64
+            }))
+            .reply(&api)
+            .await;
 
-    //     let subscribed = list_subscribed();
-    //     assert!(subscribed.contains(&"01234567890A="));
+        let new_user: User = from_str(
+            &json!({
+                "id":"subscribed",
+                "name":"John McClane Subscribed",
+                "avatar":"http://avatar.example.com",
+                "country":"UK",
+                "language":"en",
+                "api_version":1
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let subscribed = list_subscribed().await.unwrap();
+        assert!(subscribed.contains(&new_user));
 
-    //     assert_eq!(resp.status(), StatusCode::OK);
-    // }
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
 
     #[tokio::test]
     async fn test_events_unrelated() {
-        flush_all().await;
         let api = events();
 
         let resp = request()
