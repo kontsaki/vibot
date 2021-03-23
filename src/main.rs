@@ -18,14 +18,28 @@ struct User {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+struct Test {
+    event: String,
+    user: User,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 struct ConversationStarted {
     event: String,
-    timestamp: i64,
-    message_token: i64,
+    timestamp: u64,
+    message_token: u64,
     r#type: String,
     context: String,
     user: User,
     subscribed: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Subscribed {
+    event: String,
+    timestamp: u64,
+    user: User,
+    message_token: u64,
 }
 
 #[tokio::main]
@@ -43,7 +57,10 @@ fn webhook(webhook_url: &str, api_key: String, site_url: String) -> reqwest::Req
 }
 
 pub fn events() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    conversation_started().or(unrelated_event())
+    conversation_started()
+        .or(subscribed())
+        .or(tt())
+        .or(unrelated_event())
 }
 
 pub fn conversation_started(
@@ -64,6 +81,29 @@ async fn conversation_started_handler(
         "text": "Welcome",
         "media": "https://a-picture",
     })))
+}
+
+pub fn subscribed() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    warp::path!("viber" / "events")
+        .and(warp::body::json())
+        .and_then(subscribed_handler)
+}
+
+async fn subscribed_handler(event: Subscribed) -> Result<impl warp::Reply, Infallible> {
+    add_user(&format!("id:{}", event.user.id), &event.user)
+        .await
+        .expect("Failed to add user to db.");
+    Ok(reply())
+}
+
+pub fn tt() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    warp::path!("viber" / "events")
+        .and(warp::body::json())
+        .and_then(tt_handler)
+}
+
+async fn tt_handler(event: Test) -> Result<impl warp::Reply, Infallible> {
+    Ok(reply())
 }
 
 pub fn unrelated_event() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone
@@ -156,8 +196,8 @@ mod tests {
             .path("/viber/events")
             .json(&json!({
                 "event":"conversation_started",
-                "timestamp":1457764197627 as i64,
-                "message_token":4912661846655238145 as i64,
+                "timestamp":1457764197627_u64,
+                "message_token":4912661846655238145_u64,
                 "type":"open",
                 "context":"context information",
                 "user":{
@@ -187,6 +227,7 @@ mod tests {
             .await
             .expect("User doesn't exist");
         assert_eq!(user.name, "John McClane");
+
         let new_user: User = from_str(
             &json!({
                 "id":"01234567890A=",
@@ -211,17 +252,17 @@ mod tests {
             .method("POST")
             .path("/viber/events")
             .json(&json!({
-               "event":"subscribe",
-               "timestamp":1457764197627 as i64,
+               "event":"subscribed",
+               "timestamp":1457764197627_u64,
                "user":{
-                   "id":"subscribed",
+                   "id":"id-subscribed",
                    "name":"John McClane Subscribed",
                    "avatar":"http://avatar.example.com",
                    "country":"UK",
                    "language":"en",
                    "api_version":1
                },
-               "message_token":4912661846655238145 as i64
+               "message_token":4912661846655238145_u64
             }))
             .reply(&api)
             .await;
@@ -240,6 +281,29 @@ mod tests {
         .unwrap();
         let subscribed = list_subscribed().await.unwrap();
         assert!(subscribed.contains(&new_user));
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_test() {
+        let api = events();
+
+        let resp = request()
+            .method("POST")
+            .path("/viber/events")
+            .json(&json!({
+            "event":"test",
+            "user":{
+                "id":"01234567890A=",
+                "name":"John McClane",
+                "avatar":"http://avatar.example.com",
+                "country":"UK",
+                "language":"en",
+                "api_version":1
+            },
+            }))
+            .reply(&api)
+            .await;
 
         assert_eq!(resp.status(), StatusCode::OK);
     }
