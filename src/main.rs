@@ -16,7 +16,6 @@ struct User {
     language: Option<String>,
     api_version: Option<i8>,
 }
-
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "event")]
 enum Event {
@@ -53,17 +52,13 @@ fn webhook(webhook_url: &str, api_key: String, site_url: String) -> reqwest::Req
 }
 
 pub fn events() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    conversation_started().or(unrelated_event())
-}
-
-pub fn conversation_started(
-) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     warp::path!("viber" / "events")
         .and(warp::body::json())
-        .and_then(conversation_started_handler)
+        .and_then(handle_event)
+        .or(unrelated_event())
 }
 
-async fn conversation_started_handler(event: Event) -> Result<impl warp::Reply, Infallible> {
+async fn handle_event(event: Event) -> Result<impl warp::Reply, Infallible> {
     match event {
         Event::ConversationStarted { user, .. } => {
             add_user(&format!("id:{}", user.id), &user)
@@ -260,6 +255,7 @@ mod tests {
         let subscribed = list_subscribed().await.unwrap();
         assert!(subscribed.contains(&new_user));
         assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.into_body(), json!({}).to_string());
     }
 
     #[tokio::test]
