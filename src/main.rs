@@ -18,28 +18,24 @@ struct User {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct Test {
-    event: String,
-    user: User,
-}
+#[serde(tag = "event")]
+enum Event {
+    #[serde(rename = "conversation_started")]
+    ConversationStarted {
+        timestamp: u64,
+        message_token: u64,
+        r#type: String,
+        context: String,
+        user: User,
+        subscribed: bool,
+    },
 
-#[derive(Serialize, Deserialize, Debug)]
-struct ConversationStarted {
-    event: String,
-    timestamp: u64,
-    message_token: u64,
-    r#type: String,
-    context: String,
-    user: User,
-    subscribed: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Subscribed {
-    event: String,
-    timestamp: u64,
-    user: User,
-    message_token: u64,
+    #[serde(rename = "subscribed")]
+    Subscribed {
+        timestamp: u64,
+        user: User,
+        message_token: u64,
+    },
 }
 
 #[tokio::main]
@@ -57,10 +53,7 @@ fn webhook(webhook_url: &str, api_key: String, site_url: String) -> reqwest::Req
 }
 
 pub fn events() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    conversation_started()
-        .or(subscribed())
-        .or(tt())
-        .or(unrelated_event())
+    conversation_started().or(unrelated_event())
 }
 
 pub fn conversation_started(
@@ -70,40 +63,25 @@ pub fn conversation_started(
         .and_then(conversation_started_handler)
 }
 
-async fn conversation_started_handler(
-    event: ConversationStarted,
-) -> Result<impl warp::Reply, Infallible> {
-    add_user(&format!("id:{}", event.user.id), &event.user)
-        .await
-        .expect("Failed to add user to db.");
-    Ok(reply::json(&json!({
-        "type": "picture",
-        "text": "Welcome",
-        "media": "https://a-picture",
-    })))
-}
-
-pub fn subscribed() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    warp::path!("viber" / "events")
-        .and(warp::body::json())
-        .and_then(subscribed_handler)
-}
-
-async fn subscribed_handler(event: Subscribed) -> Result<impl warp::Reply, Infallible> {
-    add_user(&format!("id:{}", event.user.id), &event.user)
-        .await
-        .expect("Failed to add user to db.");
-    Ok(reply())
-}
-
-pub fn tt() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    warp::path!("viber" / "events")
-        .and(warp::body::json())
-        .and_then(tt_handler)
-}
-
-async fn tt_handler(event: Test) -> Result<impl warp::Reply, Infallible> {
-    Ok(reply())
+async fn conversation_started_handler(event: Event) -> Result<impl warp::Reply, Infallible> {
+    match event {
+        Event::ConversationStarted { user, .. } => {
+            add_user(&format!("id:{}", user.id), &user)
+                .await
+                .expect("Failed to add user to db.");
+            Ok(reply::json(&json!({
+                "type": "picture",
+                "text": "Welcome",
+                "media": "https://a-picture",
+            })))
+        }
+        Event::Subscribed { user, .. } => {
+            add_user(&format!("id:{}", user.id), &user)
+                .await
+                .expect("Failed to add user to db.");
+            Ok(reply::json(&json!({})))
+        }
+    }
 }
 
 pub fn unrelated_event() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone
@@ -269,7 +247,7 @@ mod tests {
 
         let new_user: User = from_str(
             &json!({
-                "id":"subscribed",
+                "id":"id-subscribed",
                 "name":"John McClane Subscribed",
                 "avatar":"http://avatar.example.com",
                 "country":"UK",
